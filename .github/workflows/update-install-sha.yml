@@ -1,0 +1,126 @@
+name: Update install SHA
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - install.ps1
+      - tailscale-control.ps1
+      - assets/icons/tailscale-control.ico
+      - assets/icons/tailscale.ico
+      - assets/icons/tailscale-mtu.ico
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-install-sha
+  cancel-in-progress: true
+
+jobs:
+  update-sha:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute app version and SHA-256 hashes
+        id: metadata
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import re
+
+          files = {
+              "script_hash": pathlib.Path("tailscale-control.ps1"),
+              "tailscale_control_icon_hash": pathlib.Path("assets/icons/tailscale-control.ico"),
+              "tailscale_icon_hash": pathlib.Path("assets/icons/tailscale.ico"),
+              "tailscale_mtu_icon_hash": pathlib.Path("assets/icons/tailscale-mtu.ico"),
+          }
+
+          script_text = files["script_hash"].read_text(encoding="utf-8")
+          version_match = re.search(r"\$script:AppVersion\s*=\s*['\"]([^'\"]+)['\"]", script_text)
+          if not version_match:
+              raise SystemExit("Could not find $script:AppVersion in tailscale-control.ps1")
+
+          def sha256_hex(path: pathlib.Path) -> str:
+              if not path.is_file():
+                  raise SystemExit(f"Missing required file: {path}")
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"app_version={version_match.group(1)}\n")
+              for key, path in files.items():
+                  f.write(f"{key}={sha256_hex(path)}\n")
+
+      - name: Update install.ps1
+        shell: python
+        env:
+          APP_VERSION: ${{ steps.metadata.outputs.app_version }}
+          SCRIPT_HASH: ${{ steps.metadata.outputs.script_hash }}
+          TAILSCALE_CONTROL_ICON_HASH: ${{ steps.metadata.outputs.tailscale_control_icon_hash }}
+          TAILSCALE_ICON_HASH: ${{ steps.metadata.outputs.tailscale_icon_hash }}
+          TAILSCALE_MTU_ICON_HASH: ${{ steps.metadata.outputs.tailscale_mtu_icon_hash }}
+        run: |
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("install.ps1")
+          text = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  r"\$script:AppVersion\s*=\s*['\"][^'\"]*['\"]",
+                  f"$script:AppVersion = '{os.environ['APP_VERSION']}'",
+                  "$script:AppVersion",
+              ),
+              (
+                  r"\$script:ExpectedScriptSha256\s*=\s*['\"][^'\"]*['\"]",
+                  f"$script:ExpectedScriptSha256 = '{os.environ['SCRIPT_HASH']}'",
+                  "$script:ExpectedScriptSha256",
+              ),
+          ]
+
+          for pattern, replacement, label in replacements:
+              text, count = re.subn(pattern, replacement, text, count=1)
+              if count != 1:
+                  raise SystemExit(f"Could not update {label} in install.ps1")
+
+          icon_hashes = {
+              "tailscale-control.ico": os.environ["TAILSCALE_CONTROL_ICON_HASH"],
+              "tailscale.ico": os.environ["TAILSCALE_ICON_HASH"],
+              "tailscale-mtu.ico": os.environ["TAILSCALE_MTU_ICON_HASH"],
+          }
+
+          for file_name, digest in icon_hashes.items():
+              pattern = (
+                  r"(FileName\s*=\s*'" + re.escape(file_name) +
+                  r"'[\s\S]*?ExpectedSha256\s*=\s*)['\"][^'\"]*['\"]"
+              )
+              text, count = re.subn(pattern, rf"\1'{digest}'", text, count=1)
+              if count != 1:
+                  raise SystemExit(f"Could not update hash for {file_name} in install.ps1")
+
+          path.write_text(text, encoding="utf-8")
+
+      - name: Commit and push if changed
+        shell: bash
+        run: |
+          if git diff --quiet -- install.ps1; then
+            echo "install.ps1 already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add install.ps1
+          git commit -m "chore(install): update app version and sha"
+          git push
