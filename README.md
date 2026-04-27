@@ -5,6 +5,10 @@
 </p>
 
 <p align="center">
+  <img src="/assets/tailscale-control.png" alt="Tailscale Control" width="600" />
+</p>
+
+<p align="center">
   Tailscale Control is not a replacement for Tailscale. It is a local control panel for quick actions, account switching, hotkeys, diagnostics, and Tailscale MTU integration without opening terminals or digging through menus.
 </p>
 
