@@ -260,6 +260,40 @@ function Assert-AppLauncherVbs {
     }
 }
 
+
+function Move-FileAtomically {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath
+    )
+
+    if (-not (Test-Path -LiteralPath $SourcePath)) {
+        throw 'Atomic file source does not exist.'
+    }
+
+    $destinationDirectory = Split-Path -Parent $DestinationPath
+    if (-not [string]::IsNullOrWhiteSpace([string]$destinationDirectory)) {
+        if (-not (Test-Path -LiteralPath $destinationDirectory)) {
+            New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+        }
+    }
+
+    $backupPath = $DestinationPath + '.bak'
+    if (Test-Path -LiteralPath $backupPath) {
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path -LiteralPath $DestinationPath) {
+        [System.IO.File]::Replace($SourcePath, $DestinationPath, $backupPath, $true)
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    else {
+        [System.IO.File]::Move($SourcePath, $DestinationPath)
+    }
+}
+
 function Write-AppLauncherVbs {
     param(
         [string]$ScriptPath,
@@ -292,11 +326,7 @@ oShell.Run cmd, 0, False
         Set-Content -LiteralPath $tmpPath -Value $content -Encoding ASCII
         Assert-AppLauncherVbs -Path $tmpPath -ScriptPath $ScriptPath
 
-        if (Test-Path -LiteralPath $LauncherPath) {
-            Remove-Item -LiteralPath $LauncherPath -Force -ErrorAction SilentlyContinue
-        }
-
-        Move-Item -LiteralPath $tmpPath -Destination $LauncherPath -Force
+        Move-FileAtomically -SourcePath $tmpPath -DestinationPath $LauncherPath
         Assert-AppLauncherVbs -Path $LauncherPath -ScriptPath $ScriptPath
     }
     finally {
@@ -335,10 +365,7 @@ function Install-FileAtomically {
         Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
     }
     Copy-Item -LiteralPath $SourcePath -Destination $tmpPath -Force
-    if (Test-Path -LiteralPath $DestinationPath) {
-        Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
-    }
-    Move-Item -LiteralPath $tmpPath -Destination $DestinationPath -Force
+    Move-FileAtomically -SourcePath $tmpPath -DestinationPath $DestinationPath
 }
 
 try {

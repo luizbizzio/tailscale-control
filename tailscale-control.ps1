@@ -385,7 +385,7 @@ function Set-AppToolTips {
         @{ Control = $script:chkToggleSounds; Text = "Plays a short Windows sound when a toggle action changes a Tailscale setting.`r`nDefault: Off" },
         @{ Control = $script:trkOverlayOpacity; Text = "Changes how transparent the overlay is. Higher values make it more visible.`r`nDefault: 90%" },
         @{ Control = $script:trkOverlay; Text = "Changes how long the overlay remains visible after an action finishes.`r`nDefault: 2 seconds" },
-        @{ Control = $script:trkRefresh; Text = "Sets how often the UI refreshes Tailscale status, devices, DNS, and MTU information.`r`nDefault: 10 seconds" },
+        @{ Control = $script:trkRefresh; Text = "Sets how often the UI refreshes Tailscale status, devices, DNS, and MTU information.`r`nDefault: 30 seconds" },
         @{ Control = $script:trkToggleSoundVolume; Text = "Controls the volume used by the optional toggle sound.`r`nDefault: 20%" },
         @{ Control = $script:cmbExitNode; Text = "Selects which exit node the Toggle Exit Node action should prefer. Empty means the app will not force a preferred node.`r`nDefault: Empty" },
         @{ Control = $script:btnExportDiagnostics; Text = "Creates a diagnostic JSON file in the export folder, then opens that folder." },
@@ -432,8 +432,8 @@ function Set-AppToolTips {
         @{ Control = $overlayOpacityPanel; Text = "Changes how transparent the overlay is. Higher values make it more visible.`r`nDefault: 90%" },
         @{ Control = $lblOverlay; Text = "Changes how long the overlay remains visible after an action finishes.`r`nDefault: 1.5 seconds" },
         @{ Control = $overlaySecondsPanel; Text = "Changes how long the overlay remains visible after an action finishes.`r`nDefault: 1.5 seconds" },
-        @{ Control = $lblRefresh; Text = "Sets how often the UI refreshes Tailscale status, devices, DNS, and MTU information.`r`nDefault: 10 seconds" },
-        @{ Control = $refreshPanel; Text = "Sets how often the UI refreshes Tailscale status, devices, DNS, and MTU information.`r`nDefault: 10 seconds" },
+        @{ Control = $lblRefresh; Text = "Sets how often the UI refreshes Tailscale status, devices, DNS, and MTU information.`r`nDefault: 30 seconds" },
+        @{ Control = $refreshPanel; Text = "Sets how often the UI refreshes Tailscale status, devices, DNS, and MTU information.`r`nDefault: 30 seconds" },
         @{ Control = $lblToggleSoundVolume; Text = "Controls the volume used by the optional toggle sound.`r`nDefault: 20%" },
         @{ Control = $toggleSoundVolumePanel; Text = "Controls the volume used by the optional toggle sound.`r`nDefault: 20%" },
         @{ Control = $lblExitPref; Text = "Selects which exit node the Toggle Exit Node action should prefer. Empty means the app will not force a preferred node.`r`nDefault: Empty" },
@@ -1176,7 +1176,7 @@ $script:MainFormVisibilityToken = 0
 $script:SlowSnapshotCache = $null
 $script:SlowSnapshotCachedAt = [datetime]::MinValue
 $script:SlowSnapshotCacheExe = ''
-$script:SlowSnapshotIntervalSeconds = 12
+$script:SlowSnapshotIntervalSeconds = 60
 
 function Reset-SlowSnapshotCache {
     $script:SlowSnapshotCache = $null
@@ -1479,8 +1479,8 @@ function Write-Log {
     } catch { }
     try { Write-Host $line } catch { }
     try {
-        if ($null -ne $script:txtLog -and $null -ne $script:MainForm -and -not $script:MainForm.IsDisposed) {
-            $refreshActivity = [Action]{ try { Update-ActivityView -Text (Get-ActivityLogTail) } catch { } }
+        if (Test-ActivityViewActive) {
+            $refreshActivity = [Action]{ try { if (Test-ActivityViewActive) { Update-ActivityView -Text (Get-ActivityLogTail) } } catch { } }
             if ($script:txtLog.InvokeRequired) { $null = $script:txtLog.BeginInvoke($refreshActivity) }
             else { & $refreshActivity }
         }
@@ -2306,6 +2306,40 @@ function Assert-AppLauncherVbs {
     }
 }
 
+
+function Move-FileAtomically {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath
+    )
+
+    if (-not (Test-Path -LiteralPath $SourcePath)) {
+        throw 'Atomic file source does not exist.'
+    }
+
+    $destinationDirectory = Split-Path -Parent $DestinationPath
+    if (-not [string]::IsNullOrWhiteSpace([string]$destinationDirectory)) {
+        if (-not (Test-Path -LiteralPath $destinationDirectory)) {
+            New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+        }
+    }
+
+    $backupPath = $DestinationPath + '.bak'
+    if (Test-Path -LiteralPath $backupPath) {
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path -LiteralPath $DestinationPath) {
+        [System.IO.File]::Replace($SourcePath, $DestinationPath, $backupPath, $true)
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    else {
+        [System.IO.File]::Move($SourcePath, $DestinationPath)
+    }
+}
+
 function Write-AppLauncherVbs {
     param(
         [string]$ScriptPath,
@@ -2344,11 +2378,7 @@ oShell.Run cmd, 0, False
         Set-Content -LiteralPath $tmpPath -Value $content -Encoding ASCII
         Assert-AppLauncherVbs -Path $tmpPath -ScriptPath $ScriptPath
 
-        if (Test-Path -LiteralPath $LauncherPath) {
-            Remove-Item -LiteralPath $LauncherPath -Force -ErrorAction SilentlyContinue
-        }
-
-        Move-Item -LiteralPath $tmpPath -Destination $LauncherPath -Force
+        Move-FileAtomically -SourcePath $tmpPath -DestinationPath $LauncherPath
         Assert-AppLauncherVbs -Path $LauncherPath -ScriptPath $ScriptPath
     }
     finally {
@@ -2645,6 +2675,25 @@ function Get-LogLineCount {
     catch { return 0 }
 }
 
+function Test-MainUiVisible {
+    try {
+        if ($null -eq $script:MainForm -or $script:MainForm.IsDisposed) { return $false }
+        if (-not $script:MainForm.Visible) { return $false }
+        if ($script:MainForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { return $false }
+        return $true
+    }
+    catch { return $false }
+}
+
+function Test-ActivityViewActive {
+    try {
+        if (-not (Test-MainUiVisible)) { return $false }
+        if ($null -eq $script:txtLog -or $null -eq $script:leftTabs -or $null -eq $script:tabActivity) { return $false }
+        return ($script:leftTabs.SelectedTab -eq $script:tabActivity)
+    }
+    catch { return $false }
+}
+
 function Get-ActivityLogTail {
     if (-not (Test-Path -LiteralPath $script:LogPath)) { return '' }
     $clearLine = 0
@@ -2805,7 +2854,7 @@ function Get-DefaultConfig {
         log_refresh_activity = $false
         play_toggle_sounds = $false
         toggle_sound_volume = 20
-        refresh_seconds = 10
+        refresh_seconds = 30
         log_level = 'INFO'
         check_update_every_enabled = $false
         check_update_every_hours = 24
@@ -2919,8 +2968,8 @@ function Get-Config {
         if ($merged.overlay_opacity -gt 100) { $merged.overlay_opacity = 100 }
         if ($merged.toggle_sound_volume -lt 0) { $merged.toggle_sound_volume = 0 }
         if ($merged.toggle_sound_volume -gt 100) { $merged.toggle_sound_volume = 100 }
-        if ($merged.refresh_seconds -lt 3) { $merged.refresh_seconds = 3 }
-        if ($merged.refresh_seconds -gt 60) { $merged.refresh_seconds = 60 }
+        if ($merged.refresh_seconds -lt 15) { $merged.refresh_seconds = 15 }
+        if ($merged.refresh_seconds -gt 300) { $merged.refresh_seconds = 300 }
         if ($merged.check_update_every_hours -lt 1) { $merged.check_update_every_hours = 1 }
         if ($merged.check_update_every_hours -gt 168) { $merged.check_update_every_hours = 168 }
         if ($merged.control_check_update_every_hours -lt 1) { $merged.control_check_update_every_hours = 1 }
@@ -5272,7 +5321,6 @@ function Convert-PeerToMachine {
         $connection = 'Offline'
     }
     $rawJson = ''
-    try { $rawJson = ($Peer | ConvertTo-Json -Depth 8) } catch { Write-LogException -Context 'Serialize peer to JSON' -ErrorRecord $_; $rawJson = '' }
     return [pscustomobject]@{
         Machine = (ConvertTo-DiagnosticText -Text $name)
         Owner = (ConvertTo-DiagnosticText -Text $owner)
@@ -5561,7 +5609,7 @@ function Get-TailscaleSnapshot {
         $snapshotData['CurrentExitNode'] = [string]$currentExit
         $snapshotData['ExitNodes'] = $exitNodeArray
         $snapshotData['Machines'] = $machineArray
-        $snapshotData['LogTail'] = [string](Get-ActivityLogTail)
+        $snapshotData['LogTail'] = $(if (Test-ActivityViewActive) { [string](Get-ActivityLogTail) } else { '' })
         return [pscustomobject]$snapshotData
     }
     catch {
@@ -6032,8 +6080,12 @@ function Register-Hotkeys {
 
 function Start-ShowSettingsHotkeyFallback {
     if ($null -ne $script:HotkeyPollTimer) { return }
+    $cfg = Get-Config
+    $entry = $null
+    try { if ($null -ne $cfg -and $null -ne $cfg.hotkeys) { $entry = Get-ObjectPropertyOrDefault $cfg.hotkeys 'ShowSettings' $null } } catch { $entry = $null }
+    if ($null -eq $entry -or -not [bool](Get-ObjectPropertyOrDefault $entry 'enabled' $false)) { return }
     $script:HotkeyPollTimer = New-Object System.Windows.Forms.Timer
-    $script:HotkeyPollTimer.Interval = 15
+    $script:HotkeyPollTimer.Interval = 100
     $script:HotkeyPollTimer.add_Tick({
         try {
             if ($script:IsCapturingHotkey -or $script:HotkeyExecutionLock) { return }
@@ -8040,6 +8092,7 @@ function Update-LoggedAccountsView {
     try {
         $selectedTab = $null
         try { if ($null -ne $script:leftTabs) { $selectedTab = $script:leftTabs.SelectedTab } } catch { }
+        if (-not $Force -and -not (Test-MainUiVisible)) { return }
         if (-not $Force -and $selectedTab -ne $script:tabAccount -and $script:gridAccounts.Rows.Count -gt 0) { return }
 
         $accounts = @(Get-QuickAccountSwitchLoggedAccounts -Force)
@@ -8096,6 +8149,7 @@ function Update-AccountView {
     param($Snapshot,[bool]$RefreshAccounts = $false)
     try {
         if ($null -eq $script:tabAccount) { return }
+        if (-not $RefreshAccounts -and -not (Test-MainUiVisible)) { return }
         $snap = if ($null -ne $Snapshot) { $Snapshot } else { $script:Snapshot }
         if ($null -eq $snap) { return }
         $hasActiveAccountRow = $false
@@ -10127,7 +10181,7 @@ function Update-UiFromSnapshot {
             try { $script:chkMtuEnforcement.Checked = ($mtuEnabled -ne $false) } finally { $script:IsLoadingMtuControls = $false }
         }
     }
-    if ($null -ne $script:txtLog) {
+    if (Test-ActivityViewActive) {
         Update-ActivityView -Text (Get-ActivityLogTail)
     }
     if ($null -ne $script:cmbExitNode) {
@@ -10241,14 +10295,14 @@ function Complete-StatusRefreshAsyncTask {
         if (($null -ne $script:chkLogRefreshActivity -and $script:chkLogRefreshActivity.Checked) -or ($null -eq $script:chkLogRefreshActivity -and [bool](Get-ObjectPropertyOrDefault (Get-Config) 'log_refresh_activity' $false))) {
             $duration = [double](Get-ObjectPropertyOrDefault $payload 'DurationMs' 0)
             Write-Log ('Refresh completed. Duration: {0:N0} ms' -f $duration)
-            try { Update-ActivityView -Text (Get-ActivityLogTail) } catch { }
+            try { if (Test-ActivityViewActive) { Update-ActivityView -Text (Get-ActivityLogTail) } } catch { }
             try {
                 $activityRefreshTimer = New-Object System.Windows.Forms.Timer
                 $activityRefreshTimer.Interval = 150
                 $activityRefreshTimer.add_Tick({
                     param($eventSender,$eventData)
                     try { $eventSender.Stop(); $eventSender.Dispose() } catch { }
-                    try { Update-ActivityView -Text (Get-ActivityLogTail) } catch { }
+                    try { if (Test-ActivityViewActive) { Update-ActivityView -Text (Get-ActivityLogTail) } } catch { }
                 })
                 $activityRefreshTimer.Start()
             } catch { }
@@ -10358,14 +10412,14 @@ function Update-Status {
         if (($null -ne $script:chkLogRefreshActivity -and $script:chkLogRefreshActivity.Checked) -or ($null -eq $script:chkLogRefreshActivity -and [bool](Get-ObjectPropertyOrDefault (Get-Config) 'log_refresh_activity' $false))) {
             try { $sw.Stop() } catch { }
             Write-Log ('Refresh completed. Duration: {0:N0} ms' -f [double]$sw.Elapsed.TotalMilliseconds)
-            try { Update-ActivityView -Text (Get-ActivityLogTail) } catch { }
+            try { if (Test-ActivityViewActive) { Update-ActivityView -Text (Get-ActivityLogTail) } } catch { }
             try {
                 $activityRefreshTimer = New-Object System.Windows.Forms.Timer
                 $activityRefreshTimer.Interval = 150
                 $activityRefreshTimer.add_Tick({
                     param($eventSender,$eventData)
                     try { $eventSender.Stop(); $eventSender.Dispose() } catch { }
-                    try { Update-ActivityView -Text (Get-ActivityLogTail) } catch { }
+                    try { if (Test-ActivityViewActive) { Update-ActivityView -Text (Get-ActivityLogTail) } } catch { }
                 })
                 $activityRefreshTimer.Start()
             } catch { }
@@ -13122,6 +13176,7 @@ $tabPrefs.Text = 'Preferences'
 $tabHotkeys = New-Object System.Windows.Forms.TabPage
 $tabHotkeys.Text = 'Hotkeys'
 $tabActivity = New-Object System.Windows.Forms.TabPage
+$script:tabActivity = $tabActivity
 $tabActivity.Text = 'Activity'
 $null = $leftTabs.TabPages.Add($tabPrefs)
 $null = $leftTabs.TabPages.Add($tabHotkeys)
@@ -13292,11 +13347,11 @@ $refreshPanel.Margin = New-Object System.Windows.Forms.Padding(0)
 $null = $refreshPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 $null = $refreshPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 56)))
 $script:trkRefresh = New-Object TailscaleControlNoWheelTrackBar
-$script:trkRefresh.Minimum = 3
-$script:trkRefresh.Maximum = 60
-$script:trkRefresh.TickFrequency = 3
+$script:trkRefresh.Minimum = 15
+$script:trkRefresh.Maximum = 300
+$script:trkRefresh.TickFrequency = 15
 $script:trkRefresh.SmallChange = 1
-$script:trkRefresh.LargeChange = 5
+$script:trkRefresh.LargeChange = 30
 $script:trkRefresh.Dock = 'Fill'
 $script:trkRefresh.AutoSize = $false
 $script:trkRefresh.Height = 30
