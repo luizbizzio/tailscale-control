@@ -105,7 +105,7 @@ $script:QuickAccountSwitchHeader = $null
 $script:QuickAccountSwitchSeparator = $null
 $script:HotkeyIds = @{ ToggleConnect = 1; ToggleExitNode = 2; ToggleDns = 3; ToggleSubnets = 4; ToggleIncoming = 5; ShowSettings = 6; SwitchAccount1 = 101; SwitchAccount2 = 102 }
 $script:ActionLabels = @{ ToggleConnect = 'Toggle Connect'; ToggleExitNode = 'Toggle Exit Node'; ToggleDns = 'Toggle DNS'; ToggleSubnets = 'Toggle Subnets'; ToggleIncoming = 'Toggle Incoming'; ShowSettings = 'Toggle Settings'; SwitchAccount1 = 'Switch Account 1'; SwitchAccount2 = 'Switch Account 2' }
-$script:AppVersion = '1.0.0'
+$script:AppVersion = '1.0.1'
 
 function ConvertTo-ReleaseTag {
     param([string]$Version)
