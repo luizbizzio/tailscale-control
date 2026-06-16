@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$DefaultReleaseTag = 'v1.0.0'
+$DefaultReleaseTag = 'v1.0.1'
 
 if ([string]::IsNullOrWhiteSpace($DefaultReleaseTag) -or $DefaultReleaseTag -eq '__RELEASE_TAG__') {
     throw 'Default release tag was not filled. Run the GitHub Action before publishing install.ps1.'
