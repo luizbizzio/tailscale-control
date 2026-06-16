@@ -2267,22 +2267,100 @@ function ConvertTo-DiagnosticText {
     return $t
 }
 
+function Assert-AppLauncherVbs {
+    param(
+        [string]$Path,
+        [string]$ScriptPath
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw 'Launcher VBS was not created.'
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 80) {
+        throw 'Launcher VBS is too small.'
+    }
+
+    $hasNonZeroByte = $false
+    foreach ($byte in $bytes) {
+        if ($byte -ne 0) {
+            $hasNonZeroByte = $true
+            break
+        }
+    }
+
+    if (-not $hasNonZeroByte) {
+        throw 'Launcher VBS is corrupted.'
+    }
+
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding ASCII
+    if ($raw -notmatch 'WScript\.Shell' -or $raw -notmatch 'oShell\.Run') {
+        throw 'Launcher VBS did not pass the content sanity check.'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$ScriptPath)) {
+        if ($raw -notmatch [regex]::Escape([string]$ScriptPath)) {
+            throw 'Launcher VBS points to the wrong script path.'
+        }
+    }
+}
+
 function Write-AppLauncherVbs {
-    param([string]$ScriptPath,[switch]$BackgroundMode)
+    param(
+        [string]$ScriptPath,
+        [string]$LauncherPath = $script:LauncherVbsPath,
+        [switch]$BackgroundMode
+    )
+
     Initialize-AppRoot
+
+    if ([string]::IsNullOrWhiteSpace([string]$ScriptPath)) {
+        throw 'Script path cannot be empty.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$LauncherPath)) {
+        throw 'Launcher path cannot be empty.'
+    }
+
+    $launcherDirectory = Split-Path -Parent $LauncherPath
+    if (-not [string]::IsNullOrWhiteSpace([string]$launcherDirectory)) {
+        if (-not (Test-Path -LiteralPath $launcherDirectory)) {
+            New-Item -ItemType Directory -Path $launcherDirectory -Force | Out-Null
+        }
+    }
+
     $extra = ''
     if ($BackgroundMode) { $extra = ' -Background' }
+
     $content = @"
 Set oShell = CreateObject("WScript.Shell")
 cmd = Chr(34) & "$($script:PowerShellExe)" & Chr(34) & " -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & "$ScriptPath" & Chr(34) & "$extra"
 oShell.Run cmd, 0, False
 "@
-    Set-Content -LiteralPath $script:LauncherVbsPath -Value $content -Encoding ASCII
+
+    $tmpPath = $LauncherPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        Set-Content -LiteralPath $tmpPath -Value $content -Encoding ASCII
+        Assert-AppLauncherVbs -Path $tmpPath -ScriptPath $ScriptPath
+
+        if (Test-Path -LiteralPath $LauncherPath) {
+            Remove-Item -LiteralPath $LauncherPath -Force -ErrorAction SilentlyContinue
+        }
+
+        Move-Item -LiteralPath $tmpPath -Destination $LauncherPath -Force
+        Assert-AppLauncherVbs -Path $LauncherPath -ScriptPath $ScriptPath
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmpPath) {
+            Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Initialize-StartMenuShortcut {
     Initialize-AppRoot
-    Write-AppLauncherVbs -ScriptPath $script:InstalledScriptPath
+    Write-AppLauncherVbs -ScriptPath $script:InstalledScriptPath -LauncherPath $script:LauncherVbsPath
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($script:StartMenuShortcutPath)
     $shortcut.TargetPath = $script:WScriptExe
@@ -5582,8 +5660,7 @@ function Set-StartupSetting {
     param($Config)
     if ([bool]$Config.start_with_windows) {
         $launch = if (Test-Path -LiteralPath $script:InstalledScriptPath) { $script:InstalledScriptPath } else { $script:ScriptPath }
-        Write-AppLauncherVbs -ScriptPath $launch -BackgroundMode:([bool]$Config.start_minimized)
-        Copy-Item -LiteralPath $script:LauncherVbsPath -Destination $script:StartupVbsPath -Force
+        Write-AppLauncherVbs -ScriptPath $launch -LauncherPath $script:StartupVbsPath -BackgroundMode:([bool]$Config.start_minimized)
     }
     else {
         if (Test-Path -LiteralPath $script:StartupVbsPath) { Remove-Item -LiteralPath $script:StartupVbsPath -Force -ErrorAction SilentlyContinue }

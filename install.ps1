@@ -221,15 +221,89 @@ function Get-AppVersionFromFile {
     return 'unknown'
 }
 
+function Assert-AppLauncherVbs {
+    param(
+        [string]$Path,
+        [string]$ScriptPath
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw 'Launcher VBS was not created.'
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 80) {
+        throw 'Launcher VBS is too small.'
+    }
+
+    $hasNonZeroByte = $false
+    foreach ($byte in $bytes) {
+        if ($byte -ne 0) {
+            $hasNonZeroByte = $true
+            break
+        }
+    }
+
+    if (-not $hasNonZeroByte) {
+        throw 'Launcher VBS is corrupted.'
+    }
+
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding ASCII
+    if ($raw -notmatch 'WScript\.Shell' -or $raw -notmatch 'oShell\.Run') {
+        throw 'Launcher VBS did not pass the content sanity check.'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$ScriptPath)) {
+        if ($raw -notmatch [regex]::Escape([string]$ScriptPath)) {
+            throw 'Launcher VBS points to the wrong script path.'
+        }
+    }
+}
+
 function Write-AppLauncherVbs {
-    param([string]$ScriptPath)
+    param(
+        [string]$ScriptPath,
+        [string]$LauncherPath = $script:LauncherVbsPath,
+        [switch]$BackgroundMode
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$ScriptPath)) {
+        throw 'Script path cannot be empty.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$LauncherPath)) {
+        throw 'Launcher path cannot be empty.'
+    }
+
+    $launcherDirectory = Split-Path -Parent $LauncherPath
+    Initialize-Directory -Path $launcherDirectory
+
+    $extra = ''
+    if ($BackgroundMode) { $extra = ' -Background' }
 
     $content = @"
 Set oShell = CreateObject("WScript.Shell")
-cmd = Chr(34) & "$($script:PowerShellExe)" & Chr(34) & " -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & "$ScriptPath" & Chr(34)
+cmd = Chr(34) & "$($script:PowerShellExe)" & Chr(34) & " -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & "$ScriptPath" & Chr(34) & "$extra"
 oShell.Run cmd, 0, False
 "@
-    Set-Content -LiteralPath $script:LauncherVbsPath -Value $content -Encoding ASCII
+
+    $tmpPath = $LauncherPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        Set-Content -LiteralPath $tmpPath -Value $content -Encoding ASCII
+        Assert-AppLauncherVbs -Path $tmpPath -ScriptPath $ScriptPath
+
+        if (Test-Path -LiteralPath $LauncherPath) {
+            Remove-Item -LiteralPath $LauncherPath -Force -ErrorAction SilentlyContinue
+        }
+
+        Move-Item -LiteralPath $tmpPath -Destination $LauncherPath -Force
+        Assert-AppLauncherVbs -Path $LauncherPath -ScriptPath $ScriptPath
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmpPath) {
+            Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Initialize-StartMenuShortcut {
