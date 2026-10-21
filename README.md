@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="/assets/tailscale-control.png" alt="Tailscale Control" width="600" />
+  <img src="assets/tailscale-control.png" alt="Tailscale Control" width="600"/>
 </p>
 
 <p align="center">
